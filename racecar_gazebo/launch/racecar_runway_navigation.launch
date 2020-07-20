@@ -1,12 +1,18 @@
 <?xml version="1.0"?>
 <launch>
   <!-- Launch the racecar -->
-  <include file="$(find racecar_gazebo)/launch/racecar.launch">
-    <arg name="world_name" value="racecar_runway"/>
+  <include file="$(find racecar_description)/launch/racecar.launch">
   </include>
   
-  <!-- Launch the built-map -->
-  <node name="map_server" pkg="map_server" type="map_server" args="$(find racecar_gazebo)/map/map_runway.yaml" />
+  <!-- Launch the amcl -->
+  <include file="$(find racecar_gazebo)/launch/amcl.launch">
+  </include>
+  
+  <!-- 设置一个/odom和/map之间的静态坐标变换 -->
+  <!--<node pkg="tf" type="static_transform_publisher" name="map_odom_broadcaster" args="0 0 0 0 0 0 0  odom base_link 50" />-->
+ 
+ <!-- Launch the built-map -->
+  <node name="map_server" pkg="map_server" type="map_server" args="$(find racecar_gazebo)/map/map_run.yaml" />
 
   <!--Launch the move base with time elastic band-->
   <param name="/use_sim_time" value="true"/>

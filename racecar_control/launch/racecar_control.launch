@@ -12,11 +12,6 @@
                                             left_steering_hinge_position_controller right_steering_hinge_position_controller
                                             joint_state_controller"/>
 
-  <!-- convert joint states to TF transforms for rviz, etc -->
-  <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher" respawn="false" output="screen">
-    <remap from="/joint_states" to="/racecar/joint_states" />
-  </node>
-
   <!-- servo node -->
   <node pkg="racecar_control" type="servo_commands.py" name="servo_commands" output="screen">
     <remap from="/racecar/ackermann_cmd_mux/output" to="/vesc/low_level/ackermann_cmd_mux/output"/>

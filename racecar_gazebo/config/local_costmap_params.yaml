@@ -1,7 +1,8 @@
+#  局部耗费地图
 local_costmap:
   global_frame: map
-  robot_base_frame: base_link
-  update_frequency: 20.0
+  robot_base_frame: base_footprint
+  update_frequency: 10.0
   publish_frequency: 10.0
   static_map: false
   rolling_window: true

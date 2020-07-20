@@ -36,7 +36,7 @@ class OdometryNode:
     def sub_robot_pose_update(self, msg):
         # Find the index of the racecar
         try:
-            arrayIndex = msg.name.index('racecar::base_link')
+            arrayIndex = msg.name.index('racecar::base_footprint')
         except ValueError as e:
             # Wait for Gazebo to startup
             pass
@@ -52,8 +52,8 @@ class OdometryNode:
 
         cmd = Odometry()
         cmd.header.stamp = self.last_recieved_stamp
-        cmd.header.frame_id = 'map'
-        cmd.child_frame_id = 'base_link' # This used to be odom
+        cmd.header.frame_id = 'odom'
+        cmd.child_frame_id = 'base_footprint' # This used to be odom
         cmd.pose.pose = self.last_received_pose
         cmd.twist.twist = self.last_received_twist
         self.pub_odom.publish(cmd)
