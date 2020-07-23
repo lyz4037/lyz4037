@@ -33,8 +33,8 @@ CLaserOdometry2D::CLaserOdometry2D()
     //Read Parameters
     //----------------
     ros::NodeHandle pn("~");
-    pn.param<std::string>("laser_scan_topic",laser_scan_topic,"/laser_scan");
-    pn.param<std::string>("base_frame_id", base_frame_id, "/base_link");
+    pn.param<std::string>("laser_scan_topic",laser_scan_topic,"/scan");
+    pn.param<std::string>("base_frame_id", base_frame_id, "/base_footprint");
     pn.param<std::string>("odom_frame_id", odom_frame_id, "/odom");
     pn.param<double>("freq",freq,10.0);
 
@@ -80,7 +80,7 @@ void CLaserOdometry2D::Init()
     tf::StampedTransform transform;
     try
     {
-        tf_listener.lookupTransform("/base_link", last_scan.header.frame_id, ros::Time(0), transform);
+        tf_listener.lookupTransform("/base_footprint", last_scan.header.frame_id, ros::Time(0), transform);
     }
     catch (tf::TransformException &ex)
     {
@@ -704,7 +704,7 @@ void CLaserOdometry2D::solveSystemNonLinear()
 
     cov_odo = (1.f/float(num_valid_range-3))*AtA.inverse()*res.squaredNorm();
     kai_loc_level = Var;
-    std::cout << endl << "COV_ODO: " << cov_odo  << endl;
+    //std::cout << endl << "COV_ODO: " << cov_odo  << endl;
 }
 
 void CLaserOdometry2D::Reset(CPose3D ini_pose, CObservation2DRangeScan scan)
@@ -920,7 +920,7 @@ void CLaserOdometry2D::PoseUpdate()
     tf::StampedTransform transform;
     try
     {
-        tf_listener.lookupTransform(last_scan.header.frame_id, "/base_link", ros::Time(0), transform);
+        tf_listener.lookupTransform(last_scan.header.frame_id, "/base_footprint", ros::Time(0), transform);
     }
     catch (tf::TransformException &ex)
     {

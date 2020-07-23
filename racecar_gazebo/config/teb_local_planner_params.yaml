@@ -5,12 +5,12 @@ TebLocalPlannerROS:
  # Trajectory
   
  teb_autosize: True
- dt_ref: 0.3    #最优路径上的两个相邻姿态（即位置、速度、航向信息，可通过TEB可视化在rivz中看到）的默认距离
+ dt_ref: 0.5    #最优路径上的两个相邻姿态（即位置、速度、航向信息，可通过TEB可视化在rivz中看到）的默认距离
  dt_hysteresis: 0.1
  max_samples: 500
  global_plan_overwrite_orientation: True #覆盖全局路径的方向是预留给3D路径规划使用的。对于车辆的2D规划，可以设置为False，可实现对全局路径的更好跟踪。
  allow_init_with_backwards_motion: True
- max_global_plan_lookahead_dist: 8  # 最大向前看距离
+ max_global_plan_lookahead_dist: 5  # 最大向前看距离
  global_plan_viapoint_sep: -1  #从全局规划路径中提取的路点的相互距离
  global_plan_prune_distance: 1
  exact_arc_length: False
@@ -52,8 +52,8 @@ TebLocalPlannerROS:
     
  # Obstacles
     
- min_obstacle_dist: 0.5 # 最小障碍物距离This value must also include our robot's expansion, since footprint_model is set to "line".
- inflation_dist: 0.8  #障碍物膨胀距离。此膨胀只是降低通过这些区域的优先级，不应当用此距离迫使车辆远离障碍物。
+ min_obstacle_dist: 0.3 # 最小障碍物距离This value must also include our robot's expansion, since footprint_model is set to "line".
+ inflation_dist: 0.5  #障碍物膨胀距离。此膨胀只是降低通过这些区域的优先级，不应当用此距离迫使车辆远离障碍物。
  include_costmap_obstacles: True  #必须为true时才能规避实时探测到的、建图时不存在的障碍物
  costmap_obstacles_behind_robot_dist: 1.0
  obstacle_poses_affected: 20
@@ -86,7 +86,7 @@ TebLocalPlannerROS:
  weight_inflation: 0.2
  weight_dynamic_obstacle: 10 # not in use yet
  weight_dynamic_obstacle_inflation: 0.2
- weight_viapoint: 1
+ weight_viapoint: 10
  weight_adapt_factor: 2
 
  # Homotopy Class Planner

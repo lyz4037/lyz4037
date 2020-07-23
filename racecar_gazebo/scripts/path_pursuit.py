@@ -13,7 +13,7 @@ import os
 
 class following_path:
     def __init__(self):
-        self.current_pose = rospy.Subscriber('/pf/pose/odom', Odometry, self.callback_read_current_position, queue_size=1)
+        self.current_pose = rospy.Subscriber('odometry/filtered', Odometry, self.callback_read_current_position, queue_size=1)
         self.Pose = []
         self.path_pose = rospy.Subscriber('/move_base/TebLocalPlannerROS/global_plan', Path, self.callback_read_path, queue_size=1)
         self.path_info = []

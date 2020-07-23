@@ -145,7 +145,7 @@ add_executable(findLine src/findLine.cpp)
    ${OpenCV_LiBRARIES}
  )
 
- add_dependencies(findLine findLine_tutorials_generate_messages_cpp)
+# add_dependencies(findLine findLine_tutorials_generate_messages_cpp)
 
 #############
 ## Install ##

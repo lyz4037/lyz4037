@@ -1,7 +1,7 @@
 #  局部耗费地图
 local_costmap:
   global_frame: map
-  robot_base_frame: base_footprint
+  robot_base_frame: base_footprint  #器人的基座标名称width和height这个参数默认设置为5.5
   update_frequency: 10.0
   publish_frequency: 10.0
   static_map: false

@@ -113,7 +113,7 @@ limitations under the License.
 
   <!-- These constants are used to simulate a Traxxas 2056 servo operated at
        6 V. servo_stall_torque is measured in N m. servo_no_load_speed is
-       measured in rad/s.  舵机 -->
+       measured in rad/s.  -->
   <xacro:property name="servo_stall_torque" value="0.5649"/>
   <xacro:property name="servo_no_load_speed" value="4.553"/>
 

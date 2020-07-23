@@ -39,7 +39,10 @@
 	    <!-- 在gazebo中加载机器人模型-->
     <node name="urdf_spawner" pkg="gazebo_ros" type="spawn_model" respawn="false" output="screen"
           args="-urdf -model racecar -param robot_description -x $(arg x_pos) -y $(arg y_pos) -z $(arg z_pos)"/> 
- 
+ <!-- Launch the odom -->
+  <include file="$(find rf2o_laser_odometry)/launch/rf2o_laser_odometry.launch">
+   </include>
+
 	<!-- 机器人节点控制 -->
     <include file="$(find racecar_control)/launch/racecar_control.launch" ns="/"/>
 

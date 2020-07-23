@@ -17,8 +17,8 @@ import tf2_ros
 
 class OdometryNode:
     # Set publishers
-    pub_odom = rospy.Publisher('/vesc/odom', Odometry, queue_size=1)
-
+    pub_odom = rospy.Publisher('/pf/pose/odom', Odometry, queue_size=1)
+   
     def __init__(self):
         # init internals
         self.last_received_pose = Pose()
@@ -32,7 +32,7 @@ class OdometryNode:
 
         # Set subscribers
         rospy.Subscriber('/gazebo/link_states', LinkStates, self.sub_robot_pose_update)
-
+	
     def sub_robot_pose_update(self, msg):
         # Find the index of the racecar
         try:
