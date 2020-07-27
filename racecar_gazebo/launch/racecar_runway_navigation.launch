@@ -3,18 +3,11 @@
   <!-- Launch the racecar -->
   <include file="$(find racecar_description)/launch/racecar.launch">
   </include>
-  
+
   <!-- Launch the amcl -->
   <include file="$(find racecar_gazebo)/launch/amcl.launch">
   </include>
   
-  <!-- 设置一个/odom和/map之间的静态坐标变换 -->
-  <!--<node pkg="tf" type="static_transform_publisher" name="map_odom_broadcaster" args="0 0 0 0 0 0 0  odom base_link 50" />-->
- 
- <!-- Robot_Localization -->
-    <node pkg="robot_localization" type="ekf_localization_node" name="ekf_se" clear_params="true">
-        <rosparam command="load" file="$(find racecar_gazebo)/config/ekf_params.yaml" />
-    </node>
  <!-- Launch the built-map -->
   <node name="map_server" pkg="map_server" type="map_server" args="$(find racecar_gazebo)/map/map_run.yaml" />
 
@@ -38,7 +31,8 @@
 
     <param name="clearing_rotation_allowed" value="false" />
   </node>
+  
    <!-- 启动rviz -->
-    <node pkg="rviz" type="rviz" name="rviz" args="-d $(find racecar_gazebo)/config/shiyan2.rviz" />
+    <node pkg="rviz" type="rviz" name="rviz" args="-d $(find racecar_gazebo)/config/racecar_test.rviz" />
 
 </launch>

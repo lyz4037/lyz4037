@@ -134,7 +134,6 @@ include_directories(
 
 ## Declare a C++ executable
 add_executable(findLine src/findLine.cpp)
-
 ## Add cmake target dependencies of the executable
 ## same as for the library above
 # add_dependencies(racecar_gazebo_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
@@ -194,3 +193,35 @@ add_executable(findLine src/findLine.cpp)
 
 ## Add folders to be run by python nosetests
 # catkin_add_nosetests(test)
+#############
+## Testing ##
+#############
+
+## Add gtest based cpp test target and link libraries
+# catkin_add_gtest(${PROJECT_NAME}-test test/test_art_racecar.cpp)
+# if(TARGET ${PROJECT_NAME}-test)
+#   target_link_libraries(${PROJECT_NAME}-test ${PROJECT_NAME})
+# endif()
+
+## Add folders to be run by python nosetests
+# catkin_add_nosetests(test)
+install(DIRECTORY launch
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
+)
+
+install(DIRECTORY src
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
+)
+
+
+
+
+add_executable(art_car_controller 
+	src/art_car_controller.cpp 
+	src/art_car_controller.hpp
+	src/PID.h
+)
+target_link_libraries(art_car_controller 
+	${catkin_LIBRARIES}
+	${PROJECT_SOURCE_DIR}/src/lib/libart_controller.a
+)

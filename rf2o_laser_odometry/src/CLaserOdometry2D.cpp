@@ -33,10 +33,12 @@ CLaserOdometry2D::CLaserOdometry2D()
     //Read Parameters
     //----------------
     ros::NodeHandle pn("~");
-    pn.param<std::string>("laser_scan_topic",laser_scan_topic,"/scan");
-    pn.param<std::string>("base_frame_id", base_frame_id, "/base_footprint");
-    pn.param<std::string>("odom_frame_id", odom_frame_id, "/odom");
-    pn.param<double>("freq",freq,10.0);
+  pn.param<std::string>("laser_scan_topic",laser_scan_topic,"/laser_scan");
+  pn.param<std::string>("base_frame_id", base_frame_id, "/base_link");
+  pn.param<std::string>("odom_frame_id", odom_frame_id, "/odom");
+  pn.param<double>("freq",freq,10.0);
+
+   
 
     //Publishers and Subscribers
     //--------------------------    
@@ -80,7 +82,7 @@ void CLaserOdometry2D::Init()
     tf::StampedTransform transform;
     try
     {
-        tf_listener.lookupTransform("/base_footprint", last_scan.header.frame_id, ros::Time(0), transform);
+        tf_listener.lookupTransform("/base_link", last_scan.header.frame_id, ros::Time(0), transform);
     }
     catch (tf::TransformException &ex)
     {
@@ -406,7 +408,7 @@ void CLaserOdometry2D::createImagePyramid()
 		{
             if (range[i](u) > 0.f)
 			{
-				const float tita = -0.5*fovh + float(u)*fovh/float(cols_i-1);
+				const float tita = -0.5*fovh + float(u)*fovh/float(cols_i-1);  //xiugai
 				xx[i](u) = range[i](u)*cos(tita);
 				yy[i](u) = range[i](u)*sin(tita);
 			}
@@ -704,7 +706,7 @@ void CLaserOdometry2D::solveSystemNonLinear()
 
     cov_odo = (1.f/float(num_valid_range-3))*AtA.inverse()*res.squaredNorm();
     kai_loc_level = Var;
-    //std::cout << endl << "COV_ODO: " << cov_odo  << endl;
+   // std::cout << endl << "COV_ODO: " << cov_odo  << endl;
 }
 
 void CLaserOdometry2D::Reset(CPose3D ini_pose, CObservation2DRangeScan scan)
@@ -920,7 +922,7 @@ void CLaserOdometry2D::PoseUpdate()
     tf::StampedTransform transform;
     try
     {
-        tf_listener.lookupTransform(last_scan.header.frame_id, "/base_footprint", ros::Time(0), transform);
+        tf_listener.lookupTransform(last_scan.header.frame_id, "/base_link", ros::Time(0), transform);
     }
     catch (tf::TransformException &ex)
     {
@@ -995,17 +997,17 @@ void CLaserOdometry2D::PoseUpdate()
     odom.header.stamp = ros::Time::now();
     odom.header.frame_id = odom_frame_id;
     //set the position
-    odom.pose.pose.position.x = -robot_pose.x();
-    odom.pose.pose.position.y = -robot_pose.y();
+    odom.pose.pose.position.x = robot_pose.x();
+    odom.pose.pose.position.y = robot_pose.y();
     odom.pose.pose.position.z = 0.0;
     odom.pose.pose.orientation = tf::createQuaternionMsgFromYaw(robot_pose.yaw());
     //set the velocity
     odom.child_frame_id = base_frame_id;
-    #ifdef rplidar 
+    //#ifdef rplidar 
     	odom.twist.twist.linear.x = lin_speed;    //linear speed
-    #else
-    	odom.twist.twist.linear.x = -lin_speed;    //linear speed
-    #endif
+    //#else
+    	//odom.twist.twist.linear.x = -lin_speed;    //linear speed
+    //#endif
     odom.twist.twist.linear.y = 0.0;
     odom.twist.twist.angular.z = ang_speed;   //angular speed
 
@@ -1087,12 +1089,12 @@ int main(int argc, char** argv)
     while (ros::ok())
     {
         ros::spinOnce();        //Check for new laser scans
-        ROS_INFO("LOOP");
+        //ROS_INFO("LOOP");
         if( myLaserOdom.is_initialized() && myLaserOdom.scan_available() )
         {            
             //Process odometry estimation
             myLaserOdom.odometryCalculation();
-            ROS_INFO("odom calc");
+           // ROS_INFO("odom calc");
         }
         else
         {

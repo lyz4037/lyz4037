@@ -39,36 +39,55 @@
 
 #include <algorithm>
 #include <map>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 #include <limits>
 
+#if defined(_WIN32) && defined(ERROR)
+  #undef ERROR
+#endif
+
 namespace RobotLocalization
 {
   template<typename T>
-  RosFilter<T>::RosFilter(std::vector<double> args) :
-      staticDiagErrorLevel_(diagnostic_msgs::DiagnosticStatus::OK),
-      tfListener_(tfBuffer_),
-      dynamicDiagErrorLevel_(diagnostic_msgs::DiagnosticStatus::OK),
-      filter_(args),
-      frequency_(30.0),
-      historyLength_(0),
-      lastSetPoseTime_(0),
-      latestControl_(),
-      latestControlTime_(0),
-      tfTimeout_(ros::Duration(0)),
-      nhLocal_("~"),
+  RosFilter<T>::RosFilter(ros::NodeHandle nh,
+                          ros::NodeHandle nh_priv,
+                          std::string node_name,
+                          std::vector<double> args) :
+      disabledAtStartup_(false),
+      enabled_(false),
       predictToCurrentTime_(false),
       printDiagnostics_(true),
-      gravitationalAcc_(9.80665),
-      publishTransform_(true),
       publishAcceleration_(false),
+      publishTransform_(true),
+      resetOnTimeJump_(false),
+      smoothLaggedData_(false),
+      toggledOn_(true),
       twoDMode_(false),
       useControl_(false),
-      smoothLaggedData_(false),
-      disabledAtStartup_(false),
-      enabled_(false)
+      dynamicDiagErrorLevel_(diagnostic_msgs::DiagnosticStatus::OK),
+      staticDiagErrorLevel_(diagnostic_msgs::DiagnosticStatus::OK),
+      frequency_(30.0),
+      gravitationalAcc_(9.80665),
+      historyLength_(0),
+      minFrequency_(frequency_ - 2.0),
+      maxFrequency_(frequency_ + 2.0),
+      baseLinkFrameId_("base_link"),
+      mapFrameId_("map"),
+      odomFrameId_("odom"),
+      worldFrameId_(odomFrameId_),
+      lastDiagTime_(0),
+      lastSetPoseTime_(0),
+      latestControlTime_(0),
+      tfTimeOffset_(ros::Duration(0)),
+      tfTimeout_(ros::Duration(0)),
+      filter_(args),
+      nh_(nh),
+      nhLocal_(nh_priv),
+      diagnosticUpdater_(nh, nh_priv, node_name),
+      tfListener_(tfBuffer_)
   {
     stateVariableNames_.push_back("X");
     stateVariableNames_.push_back("Y");
@@ -90,9 +109,50 @@ namespace RobotLocalization
   }
 
   template<typename T>
+  RosFilter<T>::RosFilter(ros::NodeHandle nh, ros::NodeHandle nh_priv, std::vector<double> args) :
+      RosFilter<T>::RosFilter(nh, nh_priv, ros::this_node::getName(), args)
+  {}
+
+  template<typename T>
   RosFilter<T>::~RosFilter()
   {
     topicSubs_.clear();
+  }
+
+  template<typename T>
+  void RosFilter<T>::initialize()
+  {
+    loadParams();
+
+    if (printDiagnostics_)
+    {
+      diagnosticUpdater_.add("Filter diagnostic updater", this, &RosFilter<T>::aggregateDiagnostics);
+    }
+
+    // Set up the frequency diagnostic
+    minFrequency_ = frequency_ - 2;
+    maxFrequency_ = frequency_ + 2;
+    freqDiag_ = std::make_unique<diagnostic_updater::HeaderlessTopicDiagnostic>(
+      "odometry/filtered",
+      diagnosticUpdater_,
+      diagnostic_updater::FrequencyStatusParam(
+        &minFrequency_,
+        &maxFrequency_,
+        0.1,
+        10));
+
+    // Publisher
+    positionPub_ = nh_.advertise<nav_msgs::Odometry>("odometry/filtered", 20);
+
+    // Optional acceleration publisher
+    if (publishAcceleration_)
+    {
+      accelPub_ = nh_.advertise<geometry_msgs::AccelWithCovarianceStamped>("accel/filtered", 20);
+    }
+
+    lastDiagTime_ = ros::Time::now();
+
+    periodicUpdateTimer_ = nh_.createTimer(ros::Duration(1./frequency_), &RosFilter<T>::periodicUpdate, this);
   }
 
   template<typename T>
@@ -103,12 +163,7 @@ namespace RobotLocalization
     previousMeasurements_.clear();
     previousMeasurementCovariances_.clear();
 
-    // Clear the measurement queue.
-    // This prevents us from immediately undoing our reset.
-    while (!measurementQueue_.empty() && ros::ok())
-    {
-      measurementQueue_.pop();
-    }
+    clearMeasurementQueue();
 
     filterStateHistory_.clear();
     measurementHistory_.clear();
@@ -128,6 +183,24 @@ namespace RobotLocalization
 
     // clear all waiting callbacks
     ros::getGlobalCallbackQueue()->clear();
+  }
+
+  template<typename T>
+  bool RosFilter<T>::toggleFilterProcessingCallback(robot_localization::ToggleFilterProcessing::Request& req,
+                                                    robot_localization::ToggleFilterProcessing::Response& resp)
+  {
+    if (req.on == toggledOn_)
+    {
+      ROS_WARN_STREAM("Service was called to toggle filter processing but state was already as requested.");
+      resp.status = false;
+    }
+    else
+    {
+      ROS_INFO("Toggling filter measurement filtering to %s.", req.on ? "On" : "Off");
+      toggledOn_ = req.on;
+      resp.status = true;
+    }
+    return true;
   }
 
   // @todo: Replace with AccelWithCovarianceStamped
@@ -351,7 +424,7 @@ namespace RobotLocalization
 
       message.header.stamp = ros::Time(filter_.getLastMeasurementTime());
       message.header.frame_id = worldFrameId_;
-      message.child_frame_id = baseLinkFrameId_;
+      message.child_frame_id = baseLinkOutputFrameId_;
     }
 
     return filter_.getInitializedStatus();
@@ -386,7 +459,7 @@ namespace RobotLocalization
 
       // Fill header information
       message.header.stamp = ros::Time(filter_.getLastMeasurementTime());
-      message.header.frame_id = baseLinkFrameId_;
+      message.header.frame_id = baseLinkOutputFrameId_;
     }
 
     return filter_.getInitializedStatus();
@@ -534,12 +607,13 @@ namespace RobotLocalization
         int originalCount = static_cast<int>(measurementQueue_.size());
         const double firstMeasurementTime =  firstMeasurement->time_;
         const std::string firstMeasurementTopic =  firstMeasurement->topicName_;
-        if (!revertTo(firstMeasurement->time_ - 1e-9))  // revertTo may invalidate firstMeasurement
+        if (!revertTo(firstMeasurementTime - 1e-9))  // revertTo may invalidate firstMeasurement
         {
           RF_DEBUG("ERROR: history interval is too small to revert to time " << firstMeasurementTime << "\n");
           ROS_WARN_STREAM_DELAYED_THROTTLE(historyLength_, "Received old measurement for topic " <<
-              firstMeasurementTopic << ", but history interval is insufficiently sized to revert state and "
-            "measurement queue.");
+            firstMeasurementTopic << ", but history interval is insufficiently sized. Measurement time is " <<
+            std::setprecision(20) << firstMeasurementTime << ", current time is " << currentTime.toSec() <<
+            ", history length is " << historyLength_ << ".");
           restoredMeasurementCount = 0;
         }
 
@@ -690,6 +764,7 @@ namespace RobotLocalization
     nhLocal_.param("map_frame", mapFrameId_, std::string("map"));
     nhLocal_.param("odom_frame", odomFrameId_, std::string("odom"));
     nhLocal_.param("base_link_frame", baseLinkFrameId_, std::string("base_link"));
+    nhLocal_.param("base_link_frame_output", baseLinkOutputFrameId_, baseLinkFrameId_);
 
     /*
      * These parameters are designed to enforce compliance with REP-105:
@@ -720,9 +795,12 @@ namespace RobotLocalization
 
     ROS_FATAL_COND(mapFrameId_ == odomFrameId_ ||
                    odomFrameId_ == baseLinkFrameId_ ||
-                   mapFrameId_ == baseLinkFrameId_,
+                   mapFrameId_ == baseLinkFrameId_ ||
+                   odomFrameId_ == baseLinkOutputFrameId_ ||
+                   mapFrameId_ == baseLinkOutputFrameId_,
                    "Invalid frame configuration! The values for map_frame, odom_frame, "
-                   "and base_link_frame must be unique");
+                   "and base_link_frame must be unique. If using a base_link_frame_output values, it "
+                   "must not match the map_frame or odom_frame.");
 
     // Try to resolve tf_prefix
     std::string tfPrefix = "";
@@ -736,6 +814,7 @@ namespace RobotLocalization
     FilterUtilities::appendPrefix(tfPrefix, mapFrameId_);
     FilterUtilities::appendPrefix(tfPrefix, odomFrameId_);
     FilterUtilities::appendPrefix(tfPrefix, baseLinkFrameId_);
+    FilterUtilities::appendPrefix(tfPrefix, baseLinkOutputFrameId_);
     FilterUtilities::appendPrefix(tfPrefix, worldFrameId_);
 
     // Whether we're publshing the world_frame->base_link_frame transform
@@ -906,6 +985,7 @@ namespace RobotLocalization
              "\nmap_frame is " << mapFrameId_ <<
              "\nodom_frame is " << odomFrameId_ <<
              "\nbase_link_frame is " << baseLinkFrameId_ <<
+             "\base_link_frame_output is " << baseLinkOutputFrameId_ <<
              "\nworld_frame is " << worldFrameId_ <<
              "\ntransform_time_offset is " << tfTimeOffset_.toSec() <<
              "\ntransform_timeout is " << tfTimeout_.toSec() <<
@@ -938,7 +1018,11 @@ namespace RobotLocalization
     // Create a service for manually enabling the filter
     enableFilterSrv_ = nhLocal_.advertiseService("enable", &RosFilter<T>::enableFilterSrvCallback, this);
 
-    // Init the last last measurement time so we don't get a huge initial delta
+    // Create a service for toggling processing new measurements while still publishing
+    toggleFilterProcessingSrv_ =
+      nhLocal_.advertiseService("toggle", &RosFilter<T>::toggleFilterProcessingCallback, this);
+
+    // Init the last measurement time so we don't get a huge initial delta
     filter_.setLastMeasurementTime(ros::Time::now().toSec());
 
     // Now pull in each topic to which we want to subscribe.
@@ -1289,7 +1373,31 @@ namespace RobotLocalization
         // update configuration (as this contains pose information)
         std::vector<int> updateVec = loadUpdateConfig(imuTopicName);
 
+        // sanity checks for update config settings
+        std::vector<int> positionUpdateVec(updateVec.begin() + POSITION_OFFSET,
+                                           updateVec.begin() + POSITION_OFFSET + POSITION_SIZE);
+        int positionUpdateSum = std::accumulate(positionUpdateVec.begin(), positionUpdateVec.end(), 0);
+        if (positionUpdateSum > 0)
+        {
+          ROS_WARN_STREAM("Warning: Some position entries in parameter " << imuTopicName << "_config are listed true, "
+                          "but sensor_msgs/Imu contains no information about position");
+        }
+        std::vector<int> linearVelocityUpdateVec(updateVec.begin() + POSITION_V_OFFSET,
+                                                 updateVec.begin() + POSITION_V_OFFSET + LINEAR_VELOCITY_SIZE);
+        int linearVelocityUpdateSum = std::accumulate(linearVelocityUpdateVec.begin(),
+                                                      linearVelocityUpdateVec.end(),
+                                                      0);
+        if (linearVelocityUpdateSum > 0)
+        {
+          ROS_WARN_STREAM("Warning: Some linear velocity entries in parameter " << imuTopicName << "_config are listed "
+                          "true, but an sensor_msgs/Imu contains no information about linear velocities");
+        }
+
         std::vector<int> poseUpdateVec = updateVec;
+        // IMU message contains no information about position, filter everything except orientation
+        std::fill(poseUpdateVec.begin() + POSITION_OFFSET,
+                  poseUpdateVec.begin() + POSITION_OFFSET + POSITION_SIZE,
+                  0);
         std::fill(poseUpdateVec.begin() + POSITION_V_OFFSET,
                   poseUpdateVec.begin() + POSITION_V_OFFSET + TWIST_SIZE,
                   0);
@@ -1298,8 +1406,12 @@ namespace RobotLocalization
                   0);
 
         std::vector<int> twistUpdateVec = updateVec;
+        // IMU message contains no information about linear speeds, filter everything except angular velocity
         std::fill(twistUpdateVec.begin() + POSITION_OFFSET,
                   twistUpdateVec.begin() + POSITION_OFFSET + POSE_SIZE,
+                  0);
+        std::fill(twistUpdateVec.begin() + POSITION_V_OFFSET,
+                  twistUpdateVec.begin() + POSITION_V_OFFSET + LINEAR_VELOCITY_SIZE,
                   0);
         std::fill(twistUpdateVec.begin() + POSITION_A_OFFSET,
                   twistUpdateVec.begin() + POSITION_A_OFFSET + ACCELERATION_SIZE,
@@ -1607,6 +1719,7 @@ namespace RobotLocalization
                     stream.str(),
                     false);
       RF_DEBUG("Received message that preceded the most recent pose reset. Ignoring...");
+
       return;
     }
 
@@ -1740,213 +1853,157 @@ namespace RobotLocalization
   }
 
   template<typename T>
-  void RosFilter<T>::run()
+  void RosFilter<T>::periodicUpdate(const ros::TimerEvent& event)
   {
-    ROS_INFO("Waiting for valid clock time...");
-    ros::Time::waitForValid();
-    ROS_INFO("Valid clock time received. Starting node.");
-
-    loadParams();
-
-    if (printDiagnostics_)
+    // Warn the user if the update took too long (> 2 cycles)
+    const double loop_elapsed = (event.current_real - event.last_expected).toSec();
+    if (loop_elapsed > 2./frequency_)
     {
-      diagnosticUpdater_.add("Filter diagnostic updater", this, &RosFilter<T>::aggregateDiagnostics);
+      ROS_WARN_STREAM("Failed to meet update rate! Took " << std::setprecision(20) << loop_elapsed);
     }
-
-    // Set up the frequency diagnostic
-    double minFrequency = frequency_ - 2;
-    double maxFrequency = frequency_ + 2;
-    diagnostic_updater::HeaderlessTopicDiagnostic freqDiag("odometry/filtered",
-                                                           diagnosticUpdater_,
-                                                           diagnostic_updater::FrequencyStatusParam(&minFrequency,
-                                                                                                    &maxFrequency,
-                                                                                                    0.1, 10));
-
-    // We may need to broadcast a different transform than
-    // the one we've already calculated.
-    tf2::Transform mapOdomTrans;
-    tf2::Transform odomBaseLinkTrans;
-    geometry_msgs::TransformStamped mapOdomTransMsg;
-    ros::Time curTime;
-    ros::Time lastDiagTime = ros::Time::now();
-
-    // Clear out the transforms
-    worldBaseLinkTransMsg_.transform = tf2::toMsg(tf2::Transform::getIdentity());
-    mapOdomTransMsg.transform = tf2::toMsg(tf2::Transform::getIdentity());
-
-    // Publisher
-    ros::Publisher positionPub = nh_.advertise<nav_msgs::Odometry>("odometry/filtered", 20);
-    tf2_ros::TransformBroadcaster worldTransformBroadcaster;
-
-    // Optional acceleration publisher
-    ros::Publisher accelPub;
-    if (publishAcceleration_)
-    {
-      accelPub = nh_.advertise<geometry_msgs::AccelWithCovarianceStamped>("accel/filtered", 20);
-    }
-
-    const ros::Duration loop_cycle_time(1.0 / frequency_);
-    ros::Time loop_end_time = ros::Time::now();
 
     // Wait for the filter to be enabled
-    while (!enabled_ && ros::ok())
+    if (!enabled_)
     {
-      ROS_WARN_STREAM_ONCE("[" << ros::this_node::getName() << ":] This filter is disabled. To enable it call the service " << ros::this_node::getName() << "/enable");
-      ros::spinOnce();
-      if (enabled_)
+      ROS_INFO_STREAM_ONCE("Filter is disabled. To enable it call the " << enableFilterSrv_.getService() <<
+        " service");
+      return;
+    }
+
+    ros::Time curTime = ros::Time::now();
+
+    if (toggledOn_)
+    {
+      // Now we'll integrate any measurements we've received if requested
+      integrateMeasurements(curTime);
+    }
+    else
+    {
+      // clear out measurements since we're not currently processing new entries
+      clearMeasurementQueue();
+
+      // Reset last measurement time so we don't get a large time delta on toggle on
+      if (filter_.getInitializedStatus())
       {
-        break;
+        filter_.setLastMeasurementTime(ros::Time::now().toSec());
       }
     }
 
-    while (ros::ok())
+    // Get latest state and publish it
+    nav_msgs::Odometry filteredPosition;
+
+    if (getFilteredOdometryMessage(filteredPosition))
     {
-      // The spin will call all the available callbacks and enqueue
-      // their received measurements
-      ros::spinOnce();
-      curTime = ros::Time::now();
+      worldBaseLinkTransMsg_.transform = tf2::toMsg(tf2::Transform::getIdentity());
+      worldBaseLinkTransMsg_.header.stamp = filteredPosition.header.stamp + tfTimeOffset_;
+      worldBaseLinkTransMsg_.header.frame_id = filteredPosition.header.frame_id;
+      worldBaseLinkTransMsg_.child_frame_id = filteredPosition.child_frame_id;
 
-      // Now we'll integrate any measurements we've received
-      integrateMeasurements(curTime);
+      worldBaseLinkTransMsg_.transform.translation.x = filteredPosition.pose.pose.position.x;
+      worldBaseLinkTransMsg_.transform.translation.y = filteredPosition.pose.pose.position.y;
+      worldBaseLinkTransMsg_.transform.translation.z = filteredPosition.pose.pose.position.z;
+      worldBaseLinkTransMsg_.transform.rotation = filteredPosition.pose.pose.orientation;
 
-      // Get latest state and publish it
-      nav_msgs::Odometry filteredPosition;
+      // the filteredPosition is the message containing the state and covariances: nav_msgs Odometry
 
-      if (getFilteredOdometryMessage(filteredPosition))
+      if (!validateFilterOutput(filteredPosition))
       {
-        worldBaseLinkTransMsg_.header.stamp = filteredPosition.header.stamp + tfTimeOffset_;
-        worldBaseLinkTransMsg_.header.frame_id = filteredPosition.header.frame_id;
-        worldBaseLinkTransMsg_.child_frame_id = filteredPosition.child_frame_id;
+        ROS_ERROR_STREAM("Critical Error, NaNs were detected in the output state of the filter." <<
+              " This was likely due to poorly coniditioned process, noise, or sensor covariances.");
+      }
 
-        worldBaseLinkTransMsg_.transform.translation.x = filteredPosition.pose.pose.position.x;
-        worldBaseLinkTransMsg_.transform.translation.y = filteredPosition.pose.pose.position.y;
-        worldBaseLinkTransMsg_.transform.translation.z = filteredPosition.pose.pose.position.z;
-        worldBaseLinkTransMsg_.transform.rotation = filteredPosition.pose.pose.orientation;
-
-        // the filteredPosition is the message containing the state and covariances: nav_msgs Odometry
-
-        if (!validateFilterOutput(filteredPosition))
+      // If the worldFrameId_ is the odomFrameId_ frame, then we can just send the transform. If the
+      // worldFrameId_ is the mapFrameId_ frame, we'll have some work to do.
+      if (publishTransform_)
+      {
+        if (filteredPosition.header.frame_id == odomFrameId_)
         {
-          ROS_ERROR_STREAM("Critical Error, NaNs were detected in the output state of the filter." <<
-                " This was likely due to poorly coniditioned process, noise, or sensor covariances.");
+          worldTransformBroadcaster_.sendTransform(worldBaseLinkTransMsg_);
         }
-
-        // If the worldFrameId_ is the odomFrameId_ frame, then we can just send the transform. If the
-        // worldFrameId_ is the mapFrameId_ frame, we'll have some work to do.
-        if (publishTransform_)
+        else if (filteredPosition.header.frame_id == mapFrameId_)
         {
-          if (filteredPosition.header.frame_id == odomFrameId_)
+          try
           {
-            worldTransformBroadcaster.sendTransform(worldBaseLinkTransMsg_);
+            tf2::Transform worldBaseLinkTrans;
+            tf2::fromMsg(worldBaseLinkTransMsg_.transform, worldBaseLinkTrans);
+
+            tf2::Transform baseLinkOdomTrans;
+            tf2::fromMsg(tfBuffer_.lookupTransform(baseLinkFrameId_, odomFrameId_, ros::Time(0)).transform,
+                         baseLinkOdomTrans);
+
+            /*
+             * First, see these two references:
+             * http://wiki.ros.org/tf/Overview/Using%20Published%20Transforms#lookupTransform
+             * http://wiki.ros.org/geometry/CoordinateFrameConventions#Transform_Direction
+             * We have a transform from mapFrameId_->baseLinkFrameId_, but it would actually transform
+             * a given pose from baseLinkFrameId_->mapFrameId_. We then used lookupTransform, whose
+             * first two arguments are target frame and source frame, to get a transform from
+             * baseLinkFrameId_->odomFrameId_. However, this transform would actually transform data
+             * from odomFrameId_->baseLinkFrameId_. Now imagine that we have a position in the
+             * mapFrameId_ frame. First, we multiply it by the inverse of the
+             * mapFrameId_->baseLinkFrameId, which will transform that data from mapFrameId_ to
+             * baseLinkFrameId_. Now we want to go from baseLinkFrameId_->odomFrameId_, but the
+             * transform we have takes data from odomFrameId_->baseLinkFrameId_, so we need its
+             * inverse as well. We have now transformed our data from mapFrameId_ to odomFrameId_.
+             * However, if we want other users to be able to do the same, we need to broadcast
+             * the inverse of that entire transform.
+            */
+
+            tf2::Transform mapOdomTrans;
+            mapOdomTrans.mult(worldBaseLinkTrans, baseLinkOdomTrans);
+
+            geometry_msgs::TransformStamped mapOdomTransMsg;
+            mapOdomTransMsg.transform = tf2::toMsg(mapOdomTrans);
+            mapOdomTransMsg.header.stamp = filteredPosition.header.stamp + tfTimeOffset_;
+            mapOdomTransMsg.header.frame_id = mapFrameId_;
+            mapOdomTransMsg.child_frame_id = odomFrameId_;
+
+            worldTransformBroadcaster_.sendTransform(mapOdomTransMsg);
           }
-          else if (filteredPosition.header.frame_id == mapFrameId_)
+          catch(...)
           {
-            try
-            {
-              tf2::Transform worldBaseLinkTrans;
-              tf2::fromMsg(worldBaseLinkTransMsg_.transform, worldBaseLinkTrans);
-
-              if (!RosFilterUtilities::lookupTransformSafe(
-                     tfBuffer_,
-                     baseLinkFrameId_,
-                     odomFrameId_,
-                     ros::Time(filter_.getLastMeasurementTime()),
-                     odomBaseLinkTrans,
-                     true))
-              {
-                ROS_ERROR_STREAM_DELAYED_THROTTLE(1.0, "Unable to retrieve " << odomFrameId_ << "->" <<
-                  baseLinkFrameId_ << " transform. Skipping iteration...");
-                continue;
-              }
-
-              /*
-               * First, see these two references:
-               * http://wiki.ros.org/tf/Overview/Using%20Published%20Transforms#lookupTransform
-               * http://wiki.ros.org/geometry/CoordinateFrameConventions#Transform_Direction
-               * We have a transform from mapFrameId_->baseLinkFrameId_, but it would actually transform
-               * a given pose from baseLinkFrameId_->mapFrameId_. We then used lookupTransform, whose
-               * first two arguments are target frame and source frame, to get a transform from
-               * baseLinkFrameId_->odomFrameId_. However, this transform would actually transform data
-               * from odomFrameId_->baseLinkFrameId_. Now imagine that we have a position in the
-               * mapFrameId_ frame. First, we multiply it by the inverse of the
-               * mapFrameId_->baseLinkFrameId, which will transform that data from mapFrameId_ to
-               * baseLinkFrameId_. Now we want to go from baseLinkFrameId_->odomFrameId_, but the
-               * transform we have takes data from odomFrameId_->baseLinkFrameId_, so we need its
-               * inverse as well. We have now transformed our data from mapFrameId_ to odomFrameId_.
-               * However, if we want other users to be able to do the same, we need to broadcast
-               * the inverse of that entire transform.
-              */
-
-              mapOdomTrans.mult(worldBaseLinkTrans, odomBaseLinkTrans);
-
-              mapOdomTransMsg.transform = tf2::toMsg(mapOdomTrans);
-              mapOdomTransMsg.header.stamp = filteredPosition.header.stamp + tfTimeOffset_;
-              mapOdomTransMsg.header.frame_id = mapFrameId_;
-              mapOdomTransMsg.child_frame_id = odomFrameId_;
-
-              worldTransformBroadcaster.sendTransform(mapOdomTransMsg);
-            }
-            catch(...)
-            {
-              ROS_ERROR_STREAM_DELAYED_THROTTLE(5.0, "Could not obtain transform from "
-                                                << odomFrameId_ << "->" << baseLinkFrameId_);
-            }
-          }
-          else
-          {
-            ROS_ERROR_STREAM("Odometry message frame_id was " << filteredPosition.header.frame_id <<
-                             ", expected " << mapFrameId_ << " or " << odomFrameId_);
+            ROS_ERROR_STREAM_DELAYED_THROTTLE(5.0, "Could not obtain transform from "
+                                              << odomFrameId_ << "->" << baseLinkFrameId_);
           }
         }
-
-        // Fire off the position and the transform
-        positionPub.publish(filteredPosition);
-
-        if (printDiagnostics_)
+        else
         {
-          freqDiag.tick();
+          ROS_ERROR_STREAM("Odometry message frame_id was " << filteredPosition.header.frame_id <<
+                           ", expected " << mapFrameId_ << " or " << odomFrameId_);
         }
       }
 
-      // Publish the acceleration if desired and filter is initialized
-      geometry_msgs::AccelWithCovarianceStamped filteredAcceleration;
-      if (publishAcceleration_ && getFilteredAccelMessage(filteredAcceleration))
-      {
-        accelPub.publish(filteredAcceleration);
-      }
+      // Fire off the position and the transform
+      positionPub_.publish(filteredPosition);
 
-      /* Diagnostics can behave strangely when playing back from bag
-       * files and using simulated time, so we have to check for
-       * time suddenly moving backwards as well as the standard
-       * timeout criterion before publishing. */
-      double diagDuration = (curTime - lastDiagTime).toSec();
-      if (printDiagnostics_ && (diagDuration >= diagnosticUpdater_.getPeriod() || diagDuration < 0.0))
+      if (printDiagnostics_)
       {
-        diagnosticUpdater_.force_update();
-        lastDiagTime = curTime;
+        freqDiag_->tick();
       }
+    }
 
-      // Clear out expired history data
-      if (smoothLaggedData_)
-      {
-        clearExpiredHistory(filter_.getLastMeasurementTime() - historyLength_);
-      }
+    // Publish the acceleration if desired and filter is initialized
+    geometry_msgs::AccelWithCovarianceStamped filteredAcceleration;
+    if (publishAcceleration_ && getFilteredAccelMessage(filteredAcceleration))
+    {
+      accelPub_.publish(filteredAcceleration);
+    }
 
-      ros::Duration loop_elapsed_time = ros::Time::now() - loop_end_time;
+    /* Diagnostics can behave strangely when playing back from bag
+     * files and using simulated time, so we have to check for
+     * time suddenly moving backwards as well as the standard
+     * timeout criterion before publishing. */
+    double diagDuration = (curTime - lastDiagTime_).toSec();
+    if (printDiagnostics_ && (diagDuration >= diagnosticUpdater_.getPeriod() || diagDuration < 0.0))
+    {
+      diagnosticUpdater_.force_update();
+      lastDiagTime_ = curTime;
+    }
 
-      if (loop_elapsed_time > loop_cycle_time)
-      {
-        ROS_WARN_STREAM_DELAYED_THROTTLE(1.0, "Failed to meet update rate! Took " << std::setprecision(20) <<
-          loop_elapsed_time.toSec() << " seconds. Try decreasing the rate, limiting sensor output frequency, or "
-          "limiting the number of sensors.");
-      }
-      else
-      {
-        ros::Duration sleep_time = loop_cycle_time - loop_elapsed_time;
-        sleep_time.sleep();
-      }
-
-      loop_end_time = ros::Time::now();
+    // Clear out expired history data
+    if (smoothLaggedData_)
+    {
+      clearExpiredHistory(filter_.getLastMeasurementTime() - historyLength_);
     }
   }
 
@@ -1955,6 +2012,8 @@ namespace RobotLocalization
   {
     RF_DEBUG("------ RosFilter::setPoseCallback ------\nPose message:\n" << *msg);
 
+    ROS_INFO_STREAM("Received set_pose request with value\n" << *msg);
+
     std::string topicName("setPose");
 
     // Get rid of any initial poses (pretend we've never had a measurement)
@@ -1962,12 +2021,7 @@ namespace RobotLocalization
     previousMeasurements_.clear();
     previousMeasurementCovariances_.clear();
 
-    // Clear out the measurement queue so that we don't immediately undo our
-    // reset.
-    while (!measurementQueue_.empty() && ros::ok())
-    {
-      measurementQueue_.pop();
-    }
+    clearMeasurementQueue();
 
     filterStateHistory_.clear();
     measurementHistory_.clear();
@@ -1998,10 +2052,6 @@ namespace RobotLocalization
 
     filter_.setLastMeasurementTime(ros::Time::now().toSec());
 
-    // This method can apparently cancel all callbacks, and may stop the executing of the very callback that we're
-    // currently in. Therefore, nothing of consequence should come after it.
-    ros::getGlobalCallbackQueue()->clear();
-
     RF_DEBUG("\n------ /RosFilter::setPoseCallback ------\n");
   }
 
@@ -2021,9 +2071,13 @@ namespace RobotLocalization
                                              std_srvs::Empty::Response&)
   {
     RF_DEBUG("\n[" << ros::this_node::getName() << ":]" << " ------ /RosFilter::enableFilterSrvCallback ------\n");
-    if (enabled_) {
-      ROS_WARN_STREAM("[" << ros::this_node::getName() << ":] Asking for enabling filter service, but the filter was already enabled! Use param disabled_at_startup.");
-    } else {
+    if (enabled_)
+    {
+      ROS_WARN_STREAM("[" << ros::this_node::getName() << ":] Asking for enabling filter service, but the filter was "
+        "already enabled! Use param disabled_at_startup.");
+    }
+    else
+    {
       ROS_INFO_STREAM("[" << ros::this_node::getName() << ":] Enabling filter...");
       enabled_ = true;
     }
@@ -2353,12 +2407,15 @@ namespace RobotLocalization
     // It's unlikely that we'll get a velocity measurement in another frame, but
     // we have to handle the situation.
     tf2::Transform targetFrameTrans;
+    bool silent_tf_failure;
+    nh_.getParam("/silent_tf_failure", silent_tf_failure);
     bool canTransform = RosFilterUtilities::lookupTransformSafe(tfBuffer_,
                                                                 targetFrame,
                                                                 msgFrame,
                                                                 msg->header.stamp,
                                                                 tfTimeout_,
-                                                                targetFrameTrans);
+                                                                targetFrameTrans,
+                                                                silent_tf_failure);
 
     if (canTransform)
     {
@@ -2520,7 +2577,7 @@ namespace RobotLocalization
     {
       // Otherwise, we should use our target frame
       finalTargetFrame = targetFrame;
-      poseTmp.frame_id_ = (differential ? finalTargetFrame : msg->header.frame_id);
+      poseTmp.frame_id_ = (differential && !imuData ? finalTargetFrame : msg->header.frame_id);
     }
 
     RF_DEBUG("Final target frame for " << topicName << " is " << finalTargetFrame << "\n");
@@ -3040,6 +3097,8 @@ namespace RobotLocalization
     RF_DEBUG("\n----- RosFilter::revertTo -----\n");
     RF_DEBUG("\nRequested time was " << std::setprecision(20) << time << "\n")
 
+    size_t history_size = filterStateHistory_.size();
+
     // Walk back through the queue until we reach a filter state whose time stamp is less than or equal to the
     // requested time. Since every saved state after that time will be overwritten/corrected, we can pop from
     // the queue. If the history is insufficiently short, we just take the oldest state we have.
@@ -3062,14 +3121,17 @@ namespace RobotLocalization
     {
       RF_DEBUG("Insufficient history to revert to time " << time << "\n");
 
-      if (lastHistoryState.get() != NULL)
+      if (lastHistoryState)
       {
         RF_DEBUG("Will revert to oldest state at " << lastHistoryState->latestControlTime_ << ".\n");
+        ROS_WARN_STREAM_DELAYED_THROTTLE(historyLength_, "Could not revert to state with time " <<
+          std::setprecision(20) << time << ". Instead reverted to state with time " <<
+          lastHistoryState->lastMeasurementTime_ << ". History size was " << history_size);
       }
     }
 
     // If we have a valid reversion state, revert
-    if (lastHistoryState.get() != NULL)
+    if (lastHistoryState)
     {
       // Reset filter to the latest state from the queue.
       const FilterStatePtr &state = lastHistoryState;
@@ -3078,18 +3140,23 @@ namespace RobotLocalization
       filter_.setLastMeasurementTime(state->lastMeasurementTime_);
 
       RF_DEBUG("Reverted to state with time " << std::setprecision(20) << state->lastMeasurementTime_ << "\n");
-    }
 
-    // Repeat for measurements, but push every measurement onto the measurement queue as we go
-    int restored_measurements = 0;
-    while (!measurementHistory_.empty() && measurementHistory_.back()->time_ > time)
-    {
-      measurementQueue_.push(measurementHistory_.back());
-      measurementHistory_.pop_back();
-      restored_measurements++;
-    }
+      // Repeat for measurements, but push every measurement onto the measurement queue as we go
+      int restored_measurements = 0;
+      while (!measurementHistory_.empty() && measurementHistory_.back()->time_ > time)
+      {
+        // Don't need to restore measurements that predate our earliest state time
+        if (state->lastMeasurementTime_ <= measurementHistory_.back()->time_)
+        {
+          measurementQueue_.push(measurementHistory_.back());
+          restored_measurements++;
+        }
 
-    RF_DEBUG("Restored " << restored_measurements << " to measurement queue.\n");
+        measurementHistory_.pop_back();
+      }
+
+      RF_DEBUG("Restored " << restored_measurements << " to measurement queue.\n");
+    }
 
     RF_DEBUG("\n----- /RosFilter::revertTo\n");
 
@@ -3138,6 +3205,16 @@ namespace RobotLocalization
     RF_DEBUG("\nPopped " << poppedMeasurements << " measurements and " <<
              poppedStates << " states from their respective queues." <<
              "\n---- /RosFilter::clearExpiredHistory ----\n");
+  }
+
+  template<typename T>
+  void RosFilter<T>::clearMeasurementQueue()
+  {
+    while (!measurementQueue_.empty() && ros::ok())
+    {
+      measurementQueue_.pop();
+    }
+    return;
   }
 }  // namespace RobotLocalization
 

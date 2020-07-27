@@ -1,5 +1,8 @@
 <launch>
-
+     <!-- Robot_Localization -->
+    <node pkg="robot_localization" type="ekf_localization_node" name="ekf_se" clear_params="true">
+        <rosparam command="load" file="$(find racecar_gazebo)/config/ekf_params.yaml" />
+    </node>
     <node pkg = "hector_mapping" type="hector_mapping" name="hector_mapping" output="screen">
         <!-- Frame names -->
         <param name="pub_map_odom_transform" value="true"/>

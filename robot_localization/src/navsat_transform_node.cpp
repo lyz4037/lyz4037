@@ -38,9 +38,12 @@ int main(int argc, char **argv)
 {
   ros::init(argc, argv, "navsat_transform_node");
 
-  RobotLocalization::NavSatTransform trans;
+  ros::NodeHandle nh;
+  ros::NodeHandle nh_priv("~");
 
-  trans.run();
+
+  RobotLocalization::NavSatTransform trans(nh, nh_priv);
+  ros::spin();
 
   return EXIT_SUCCESS;
 }

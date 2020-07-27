@@ -27,7 +27,7 @@ TebLocalPlannerROS:
  acc_lim_theta: 0.5
 
  # ********************** Carlike robot parameters ********************
- min_turning_radius: 0.3        # （最小转弯半径）Min turning radius of the carlike robot (compute value using a model or adjust with rqt_reconfigure manually)
+ min_turning_radius: 0.5        # （最小转弯半径）Min turning radius of the carlike robot (compute value using a model or adjust with rqt_reconfigure manually)
  wheelbase: 0.335                 # Wheelbase of our robot
  cmd_angle_instead_rotvel: True # stage simulator takes the angle instead of the rotvel as input (twist message)
  # ********************************************************************
@@ -52,7 +52,7 @@ TebLocalPlannerROS:
     
  # Obstacles
     
- min_obstacle_dist: 0.3 # 最小障碍物距离This value must also include our robot's expansion, since footprint_model is set to "line".
+ min_obstacle_dist: 0.4 # 最小障碍物距离This value must also include our robot's expansion, since footprint_model is set to "line".
  inflation_dist: 0.5  #障碍物膨胀距离。此膨胀只是降低通过这些区域的优先级，不应当用此距离迫使车辆远离障碍物。
  include_costmap_obstacles: True  #必须为true时才能规避实时探测到的、建图时不存在的障碍物
  costmap_obstacles_behind_robot_dist: 1.0
@@ -86,7 +86,7 @@ TebLocalPlannerROS:
  weight_inflation: 0.2
  weight_dynamic_obstacle: 10 # not in use yet
  weight_dynamic_obstacle_inflation: 0.2
- weight_viapoint: 10
+ weight_viapoint: 30
  weight_adapt_factor: 2
 
  # Homotopy Class Planner
