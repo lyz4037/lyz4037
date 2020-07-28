@@ -15,12 +15,12 @@ class following_path:
     def __init__(self):
         self.current_pose = rospy.Subscriber('/pf/pose/odom', Odometry, self.callback_read_current_position, queue_size=1)
         self.Pose = []
-        self.path_pose = rospy.Subscriber('/move_base/TebLocalPlannerROS/global_plan', Path, self.callback_read_path, queue_size=1)
+        self.path_pose = rospy.Subscriber('/move_base/TebLocalPlannerROS/local_plan', Path, self.callback_read_path, queue_size=1)
         self.path_info = []
         self.Goal = []
         self.navigation_input = rospy.Publisher('/vesc/low_level/ackermann_cmd_mux/input/navigation', AckermannDriveStamped, queue_size=1)
         self.reach_goal = False
-        self.MAX_VELOCITY = 0.5
+        self.MAX_VELOCITY = 0.4
         self.MIN_VELOCITY = 0
         self.max_angle = 1
         self.steering_velocity = 1
