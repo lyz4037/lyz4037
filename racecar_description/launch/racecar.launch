@@ -3,7 +3,7 @@
 	    <!-- 设置launch文件的参数 -->
     <arg name="paused" default="false"/>
     <arg name="use_sim_time" default="true"/>
-    <arg name="gui" default="true"/>
+    <arg name="gui" default="true"/> 
     <arg name="headless" default="false"/>
     <arg name="debug" default="false"/>
     <!--模型车的位置不能修改-->
@@ -18,7 +18,7 @@
         	<arg name="paused" value="$(arg paused)"/>
         	<arg name="use_sim_time" value="$(arg use_sim_time)"/>
         	<arg name="headless" value="$(arg headless)"/>
-		<arg name="world_name" value="$(find racecar_description)/worlds/racetrack.world"/>
+		<arg name="world_name" value="$(find racecar_description)/worlds/test1.world"/>
                <!-- 此处改成参赛者放置.world文件的地址-->
     	</include>
 
